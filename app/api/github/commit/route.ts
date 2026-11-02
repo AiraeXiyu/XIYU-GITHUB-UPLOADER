@@ -97,13 +97,22 @@ export async function POST(req: Request) {
     let baseTree: string | undefined;
 
     if (refResponse.ok) {
-      const ref = await refResponse.json();
+      const ref: any = await refResponse.json();
 
-      parent = ref.object.sha;
+      const parentSha = String(ref?.object?.sha || "");
+
+      if (!parentSha) {
+        return NextResponse.json(
+          { error: "GitHub branch reference has no commit SHA." },
+          { status: 502 }
+        );
+      }
+
+      parent = parentSha;
 
       const parentCommit = await githubFetch<any>(
         session.accessToken,
-        `/repos/${encodedOwner}/${encodedRepo}/git/commits/${encodeURIComponent(parent)}`
+        `/repos/${encodedOwner}/${encodedRepo}/git/commits/${encodeURIComponent(parentSha)}`
       );
 
       baseTree = parentCommit.tree.sha;
