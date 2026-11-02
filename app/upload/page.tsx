@@ -1082,7 +1082,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
                 <input
                   value={repoName}
                   onChange={(e) => setRepoName(e.target.value)}
-                  placeholder="XIYU STORE AM"
+                  placeholder="YOUR PROJECT NAME"
                   className="field"
                   maxLength={100}
                 />
