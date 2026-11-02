@@ -1,38 +1,141 @@
+
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { githubFetch } from "@/lib/github";
+import { githubFetch, GitHubApiError } from "@/lib/github";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const MAX_FILE_BYTES = 3 * 1024 * 1024;
+const MAX_BASE64_LENGTH = Math.ceil(MAX_FILE_BYTES / 3) * 4;
 
 export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  let body: any;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid request body." }, { status: 400 }); }
-  const owner = String(body.owner || "");
-  const repo = String(body.repo || "");
-  const contentBase64 = String(body.contentBase64 || "");
-  const path = String(body.path || "");
-
-  if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repo) ||
-      !path || path.startsWith("/") || path.split("/").includes("..")) {
-    return NextResponse.json({ error: "Invalid file path or repository." }, { status: 400 });
-  }
-
-  // GitHub rejects individual Git blobs larger than 100 MiB. The UI applies
-  // the stricter Pack2Git-compatible 12 MiB per-file limit.
-  if (contentBase64.length > 16 * 1024 * 1024) {
-    return NextResponse.json({ error: `${path} is too large for the current server upload route. The 12 MB per-file UI limit applies, but large request bodies require a storage-backed transfer worker.` }, { status: 413 });
-  }
-
   try {
-    const result = await githubFetch<any>(session.accessToken, `/repos/${owner}/${repo}/git/blobs`, {
-      method: "POST",
-      body: JSON.stringify({ content: contentBase64, encoding: "base64" })
+    const session = await getSession();
+
+    if (!session.accessToken) {
+      return NextResponse.json(
+        { error: "Unauthorized. Please login with GitHub again." },
+        { status: 401 }
+      );
+    }
+
+    let body: any;
+
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const owner = String(body.owner || "").trim();
+    const repo = String(body.repo || "").trim();
+    const path = String(body.path || "").replaceAll("\\", "/");
+    const contentBase64 = String(body.contentBase64 || "").trim();
+
+    if (
+      !/^[A-Za-z0-9-]+$/.test(owner) ||
+      !/^[A-Za-z0-9._-]+$/.test(repo)
+    ) {
+      return NextResponse.json(
+        { error: "Invalid repository owner or name." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      !path ||
+      path.startsWith("/") ||
+      path.includes("\0") ||
+      path.split("/").some(
+        (part: string) => !part || part === "." || part === ".."
+      )
+    ) {
+      return NextResponse.json(
+        { error: "Invalid file path." },
+        { status: 400 }
+      );
+    }
+
+    if (!contentBase64) {
+      return NextResponse.json(
+        { error: "File content is empty." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      contentBase64.length > MAX_BASE64_LENGTH ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        contentBase64
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "File is too large or its Base64 content is invalid. Current per-file limit is 3 MB.",
+        },
+        { status: 413 }
+      );
+    }
+
+    const estimatedBytes = Math.floor(
+      (contentBase64.length * 3) / 4
+    ) - (contentBase64.endsWith("==") ? 2 : contentBase64.endsWith("=") ? 1 : 0);
+
+    if (estimatedBytes > MAX_FILE_BYTES) {
+      return NextResponse.json(
+        { error: "File exceeds the 3 MB per-file limit." },
+        { status: 413 }
+      );
+    }
+
+    const result = await githubFetch<{ sha: string }>(
+      session.accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          content: contentBase64,
+          encoding: "base64",
+        }),
+      }
+    );
+
+    return NextResponse.json({
+      success: true,
+      path,
+      sha: result.sha,
     });
-    return NextResponse.json({ path, sha: result.sha });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : `Failed to upload ${path}` }, { status: 502 });
+    if (error instanceof GitHubApiError) {
+      console.error("GitHub Blob API error:", {
+        status: error.status,
+        message: error.message,
+      });
+
+      return NextResponse.json(
+        {
+          error: error.message,
+          githubStatus: error.status,
+        },
+        { status: error.status }
+      );
+    }
+
+    console.error("GitHub Blob route error:", error);
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unexpected server error while uploading file.",
+      },
+      { status: 500 }
+    );
   }
 }
