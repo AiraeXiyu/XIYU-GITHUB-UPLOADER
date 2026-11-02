@@ -9,6 +9,10 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
 const MAX_BASE64_LENGTH = Math.ceil(MAX_FILE_BYTES / 3) * 4;
 
+function formatRepositoryName(value: unknown): string {
+  return String(value || "").trim().replace(/\s+/g, "-");
+}
+
 export async function POST(req: Request) {
   try {
     const session = await getSession();
@@ -32,13 +36,13 @@ export async function POST(req: Request) {
     }
 
     const owner = String(body.owner || "").trim();
-    const repo = String(body.repo || "").trim();
+    const repo = formatRepositoryName(body.repo);
     const path = String(body.path || "").replaceAll("\\", "/");
     const contentBase64 = String(body.contentBase64 || "").trim();
 
     if (
       !/^[A-Za-z0-9-]+$/.test(owner) ||
-      !/^[A-Za-z0-9._-]+$/.test(repo)
+      !/^[A-Za-z0-9._-]{1,100}$/.test(repo)
     ) {
       return NextResponse.json(
         { error: "Invalid repository owner or name." },
@@ -82,9 +86,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const estimatedBytes = Math.floor(
-      (contentBase64.length * 3) / 4
-    ) - (contentBase64.endsWith("==") ? 2 : contentBase64.endsWith("=") ? 1 : 0);
+    const estimatedBytes =
+      Math.floor((contentBase64.length * 3) / 4) -
+      (contentBase64.endsWith("==")
+        ? 2
+        : contentBase64.endsWith("=")
+          ? 1
+          : 0);
 
     if (estimatedBytes > MAX_FILE_BYTES) {
       return NextResponse.json(
