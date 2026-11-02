@@ -1,14 +1,97 @@
+
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { githubFetch } from "@/lib/github";
+import { githubFetch, GitHubApiError } from "@/lib/github";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req: Request) {
-  const s = await getSession();
-  if (!s.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const body = await req.json();
-  const name = String(body.name || "").trim();
-  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) return NextResponse.json({ error: "Repository name is invalid." }, { status: 400 });
   try {
-    const repo = await githubFetch<any>(s.accessToken, "/user/repos", { method: "POST", body: JSON.stringify({ name, description: String(body.description || "").slice(0, 350), private: Boolean(body.private), auto_init: false }) });
-    return NextResponse.json({ fullName: repo.full_name, htmlUrl: repo.html_url, defaultBranch: repo.default_branch || "main" });
-  } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "Could not create repository" }, { status: 502 }); }
+    const session = await getSession();
+
+    if (!session.accessToken) {
+      return NextResponse.json(
+        { error: "Unauthorized. Please login with GitHub again." },
+        { status: 401 }
+      );
+    }
+
+    let body: any;
+
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const name = String(body.name || "").trim();
+    const description = String(body.description || "").trim();
+    const isPrivate = body.private === true;
+
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
+      return NextResponse.json(
+        { error: "Repository name is invalid." },
+        { status: 400 }
+      );
+    }
+
+    const repo = await githubFetch<{
+      id: number;
+      name: string;
+      full_name: string;
+      html_url: string;
+      default_branch: string | null;
+      private: boolean;
+    }>(
+      session.accessToken,
+      "/user/repos",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          description: description.slice(0, 350),
+          private: isPrivate,
+          auto_init: false,
+        }),
+      }
+    );
+
+    return NextResponse.json({
+      success: true,
+      id: repo.id,
+      name: repo.name,
+      fullName: repo.full_name,
+      htmlUrl: repo.html_url,
+      defaultBranch: repo.default_branch || "main",
+      private: repo.private,
+    });
+  } catch (error) {
+    console.error("Repository creation failed:", error);
+
+    if (error instanceof GitHubApiError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message,
+          githubStatus: error.status,
+        },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not create repository.",
+      },
+      { status: 500 }
+    );
+  }
 }
