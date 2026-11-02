@@ -1,46 +1,216 @@
+
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { githubFetch } from "@/lib/github";
+import { githubFetch, GitHubApiError } from "@/lib/github";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function formatRepositoryName(value: unknown): string {
+  return String(value || "").trim().replace(/\s+/g, "-");
+}
+
 export async function POST(req: Request) {
-  const s = await getSession();
-  if (!s.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const b = await req.json();
-  const owner = String(b.owner || ""), repo = String(b.repo || ""), branch = String(b.branch || "main").trim();
-  const entries = Array.isArray(b.entries) ? b.entries : [];
-  const message = String(b.message || "Upload project with XIYU GITHUB UPLOADER").slice(0, 200);
-  if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repo) || !/^[A-Za-z0-9._/-]{1,200}$/.test(branch) || !entries.length || entries.length > 1500) return NextResponse.json({ error: "Invalid commit data. Maximum 1,500 files." }, { status: 400 });
-  if (entries.some((e: any) => typeof e.path !== "string" || typeof e.sha !== "string" || e.path.startsWith("/") || e.path.split("/").includes(".."))) return NextResponse.json({ error: "Invalid file entries." }, { status: 400 });
   try {
-    // A newly-created empty repository has no branch ref yet. Bootstrap its first commit.
-    const refPath = `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch).replaceAll("%2F", "/")}`;
-    const refResponse = await fetch(`https://api.github.com${refPath}`, {
-      headers: { Authorization: `Bearer ${s.accessToken}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
-      cache: "no-store"
-    });
+    const session = await getSession();
+
+    if (!session.accessToken) {
+      return NextResponse.json(
+        { error: "Unauthorized. Please login with GitHub again." },
+        { status: 401 }
+      );
+    }
+
+    let body: any;
+
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const owner = String(body.owner || "").trim();
+    const repo = formatRepositoryName(body.repo);
+    const branch = String(body.branch || "main").trim();
+    const entries = Array.isArray(body.entries) ? body.entries : [];
+    const message = String(
+      body.message || "Upload project with XIYU GITHUB UPLOADER"
+    ).slice(0, 200);
+
+    if (
+      !/^[A-Za-z0-9-]+$/.test(owner) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(repo) ||
+      !/^[A-Za-z0-9._/-]{1,200}$/.test(branch) ||
+      !entries.length ||
+      entries.length > 1500
+    ) {
+      return NextResponse.json(
+        { error: "Invalid commit data. Maximum 1,500 files." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      entries.some(
+        (entry: any) =>
+          typeof entry.path !== "string" ||
+          typeof entry.sha !== "string" ||
+          !entry.path ||
+          entry.path.startsWith("/") ||
+          entry.path.split("/").some(
+            (part: string) => part === "." || part === ".."
+          )
+      )
+    ) {
+      return NextResponse.json(
+        { error: "Invalid file entries." },
+        { status: 400 }
+      );
+    }
+
+    const encodedOwner = encodeURIComponent(owner);
+    const encodedRepo = encodeURIComponent(repo);
+    const encodedBranch = encodeURIComponent(branch).replaceAll(
+      "%2F",
+      "/"
+    );
+
+    const refPath =
+      `/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodedBranch}`;
+
+    const refResponse = await fetch(
+      `https://api.github.com${refPath}`,
+      {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        cache: "no-store",
+      }
+    );
+
     let parent: string | undefined;
     let baseTree: string | undefined;
+
     if (refResponse.ok) {
       const ref = await refResponse.json();
+
       parent = ref.object.sha;
-      const parentCommit = await githubFetch<any>(s.accessToken, `/repos/${owner}/${repo}/git/commits/${parent}`);
+
+      const parentCommit = await githubFetch<any>(
+        session.accessToken,
+        `/repos/${encodedOwner}/${encodedRepo}/git/commits/${encodeURIComponent(parent)}`
+      );
+
       baseTree = parentCommit.tree.sha;
     } else if (refResponse.status !== 404) {
       const problem = await refResponse.json().catch(() => ({}));
-      throw new Error(problem.message || `Could not read branch (${refResponse.status})`);
+
+      throw new Error(
+        problem.message || `Could not read branch (${refResponse.status})`
+      );
     }
-    const treePayload: any = { tree: entries.map((e: any) => ({ path: e.path, mode: "100644", type: "blob", sha: e.sha })) };
-    if (baseTree) treePayload.base_tree = baseTree;
-    const tree = await githubFetch<any>(s.accessToken, `/repos/${owner}/${repo}/git/trees`, { method: "POST", body: JSON.stringify(treePayload) });
-    const commitPayload: any = { message, tree: tree.sha };
-    if (parent) commitPayload.parents = [parent];
-    const commit = await githubFetch<any>(s.accessToken, `/repos/${owner}/${repo}/git/commits`, { method: "POST", body: JSON.stringify(commitPayload) });
+
+    const treePayload: any = {
+      tree: entries.map((entry: any) => ({
+        path: entry.path,
+        mode: "100644",
+        type: "blob",
+        sha: entry.sha,
+      })),
+    };
+
+    if (baseTree) {
+      treePayload.base_tree = baseTree;
+    }
+
+    const tree = await githubFetch<any>(
+      session.accessToken,
+      `/repos/${encodedOwner}/${encodedRepo}/git/trees`,
+      {
+        method: "POST",
+        body: JSON.stringify(treePayload),
+      }
+    );
+
+    const commitPayload: any = {
+      message,
+      tree: tree.sha,
+    };
+
     if (parent) {
-      await githubFetch<any>(s.accessToken, `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch).replaceAll("%2F", "/")}`, { method: "PATCH", body: JSON.stringify({ sha: commit.sha }) });
-    } else {
-      await githubFetch<any>(s.accessToken, `/repos/${owner}/${repo}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: commit.sha }) });
+      commitPayload.parents = [parent];
     }
-    return NextResponse.json({ commitSha: commit.sha, htmlUrl: `https://github.com/${owner}/${repo}/commit/${commit.sha}`, repoUrl: `https://github.com/${owner}/${repo}`, fileCount: entries.length });
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Commit failed. Ensure the branch exists and repository is ready." }, { status: 502 });
+
+    const commit = await githubFetch<any>(
+      session.accessToken,
+      `/repos/${encodedOwner}/${encodedRepo}/git/commits`,
+      {
+        method: "POST",
+        body: JSON.stringify(commitPayload),
+      }
+    );
+
+    if (parent) {
+      await githubFetch<any>(
+        session.accessToken,
+        `/repos/${encodedOwner}/${encodedRepo}/git/refs/heads/${encodedBranch}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            sha: commit.sha,
+          }),
+        }
+      );
+    } else {
+      await githubFetch<any>(
+        session.accessToken,
+        `/repos/${encodedOwner}/${encodedRepo}/git/refs`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ref: `refs/heads/${branch}`,
+            sha: commit.sha,
+          }),
+        }
+      );
+    }
+
+    const repoUrl = `https://github.com/${owner}/${repo}`;
+
+    return NextResponse.json({
+      success: true,
+      commitSha: commit.sha,
+      htmlUrl: `${repoUrl}/commit/${commit.sha}`,
+      repoUrl,
+      fullName: `${owner}/${repo}`,
+      fileCount: entries.length,
+    });
+  } catch (error) {
+    console.error("GitHub commit error:", error);
+
+    if (error instanceof GitHubApiError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          githubStatus: error.status,
+        },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Commit failed. Ensure the branch exists and repository is ready.",
+      },
+      { status: 502 }
+    );
   }
 }
