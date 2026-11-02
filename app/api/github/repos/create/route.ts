@@ -6,6 +6,10 @@ import { githubFetch, GitHubApiError } from "@/lib/github";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function formatRepositoryName(value: unknown): string {
+  return String(value || "").trim().replace(/\s+/g, "-");
+}
+
 export async function POST(req: Request) {
   try {
     const session = await getSession();
@@ -28,13 +32,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const name = String(body.name || "").trim();
+    const name = formatRepositoryName(body.name);
     const description = String(body.description || "").trim();
     const isPrivate = body.private === true;
 
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
       return NextResponse.json(
-        { error: "Repository name is invalid." },
+        {
+          error:
+            "Repository name is invalid. Use letters, numbers, spaces, dots, underscores, or hyphens.",
+        },
         { status: 400 }
       );
     }
@@ -55,8 +62,6 @@ export async function POST(req: Request) {
           name,
           description: description.slice(0, 350),
           private: isPrivate,
-
-          // Initialize the repository so Git Database API can create blobs.
           auto_init: true,
         }),
       }
