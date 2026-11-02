@@ -55,7 +55,9 @@ export async function POST(req: Request) {
           name,
           description: description.slice(0, 350),
           private: isPrivate,
-          auto_init: false,
+
+          // Initialize the repository so Git Database API can create blobs.
+          auto_init: true,
         }),
       }
     );
