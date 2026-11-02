@@ -48,6 +48,12 @@ const shouldSkip = (path: string, removeGit: boolean) =>
   SKIP.test(path) ||
   (removeGit && /(^|\/)\.git(\/|$)/i.test(path));
 
+const normalizeRepositoryName = (value: string) =>
+  value.trim().replace(/\s+/g, "-");
+
+const isValidRepositoryName = (value: string) =>
+  /^[A-Za-z0-9._-]{1,100}$/.test(value);
+
 const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
 
@@ -203,6 +209,15 @@ export default function UploadPage() {
   const [removeGit, setRemoveGit] = useState(true);
 
   const folderInput = useRef<HTMLInputElement>(null);
+
+  const normalizedRepoName = useMemo(
+    () => normalizeRepositoryName(repoName),
+    [repoName]
+  );
+
+  const repoNameValid =
+    normalizedRepoName.length > 0 &&
+    isValidRepositoryName(normalizedRepoName);
 
   const selectedRepo = useMemo(
     () => repos.find((r) => r.fullName === repoId),
@@ -504,7 +519,7 @@ export default function UploadPage() {
       !items.some((e) => e.path.toLowerCase() === "readme.md")
     ) {
       const text =
-        `# ${repoName || "My Project"}\n\n` +
+        `# ${normalizedRepoName || "My Project"}\n\n` +
         `${description || "Project uploaded with XIYU GITHUB UPLOADER."}\n`;
 
       const bytes = new TextEncoder().encode(text);
@@ -595,8 +610,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
         return;
       }
 
+      if (!repoNameValid) {
+        setError(
+          "Nama repository hanya boleh berisi huruf, angka, titik, tanda hubung, dan underscore. Maksimal 100 karakter."
+        );
+        return;
+      }
+
       owner = login;
-      repo = repoName.trim();
+      repo = normalizedRepoName;
     } else {
       if (!selectedRepo) {
         setError("Pilih repository tujuan.");
@@ -617,7 +639,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: repoName,
+            name: normalizedRepoName,
             description,
             private: isPrivate,
           }),
@@ -628,6 +650,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
         if (!r.ok) {
           throw new Error(d.error || "Could not create repository.");
         }
+
+        repo = d.name || normalizedRepoName;
       }
 
       const finalEntries = validateEntries(
@@ -1058,9 +1082,29 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
                 <input
                   value={repoName}
                   onChange={(e) => setRepoName(e.target.value)}
-                  placeholder="my-project"
+                  placeholder="XIYU STORE AM"
                   className="field"
+                  maxLength={100}
                 />
+
+                {repoName.trim() && (
+                  <div className="rounded-xl border border-[#eadbd4] bg-white/70 px-4 py-3 text-xs">
+                    <span className="text-[#9a8585]">
+                      Repository name preview
+                    </span>
+
+                    <p className="mt-1 break-all font-mono font-semibold text-[#816d6e]">
+                      {normalizedRepoName}
+                    </p>
+
+                    {!repoNameValid && (
+                      <p className="mt-2 text-red-600">
+                        Gunakan hanya huruf, angka, titik, tanda hubung,
+                        atau underscore. Maksimal 100 karakter.
+                      </p>
+                    )}
+                  </div>
+                )}
               </Field>
 
               <Field label="Description (optional)">
@@ -1222,7 +1266,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
           </label>
 
           <button
-            disabled={busy || chosen.length === 0}
+            disabled={
+              busy ||
+              chosen.length === 0 ||
+              (mode === "new" && !repoNameValid)
+            }
             onClick={push}
             className="btn-primary mt-6 flex w-full items-center justify-center gap-3 rounded-full px-5 py-4 text-sm font-semibold disabled:opacity-40"
           >
